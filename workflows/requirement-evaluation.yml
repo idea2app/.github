@@ -8,6 +8,7 @@ on:
       - created
 jobs:
   requirement-evaluation:
+    if: github.event.discussion.category.name == 'ideas'
     runs-on: ubuntu-latest
     permissions:
       discussions: write
