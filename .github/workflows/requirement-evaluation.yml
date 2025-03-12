@@ -12,6 +12,9 @@ jobs:
     runs-on: ubuntu-latest
     permissions:
       discussions: write
+    env:
+      GH_TOKEN: ${{ github.token }}
+      TITLE: ${{ github.event.discussion.title }}
     steps:
       - uses: pnpm/action-setup@v4
         with:
@@ -20,18 +23,14 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: 22
-          cache: pnpm
 
       - name: Install CLIs
         run: |
-          wget https://github.com/mikefarah/yq/releases/latest/download/yq_linux_amd64 -O /usr/bin/yq
-          chmod +x /usr/bin/yq
+          sudo wget https://github.com/mikefarah/yq/releases/latest/download/yq_linux_amd64 -O /usr/bin/yq
+          sudo chmod +x /usr/bin/yq
 
-          cat >> .npmrc <<EOF
-          //npm.pkg.github.com/:_authToken=${{ secrets.NPM_TOKEN }}
-          @idea2app:registry=https://npm.pkg.github.com
-          always-auth=true
-          EOF
+          npm set //npm.pkg.github.com/:_authToken=${{ secrets.NPM_TOKEN }}
+          npm set @idea2app:registry=https://npm.pkg.github.com
 
           pnpm i @idea2app/work-counter -g
 
@@ -40,28 +39,33 @@ jobs:
           EOF
 
       - name: Collect Requirement content
-        env:
-          GH_TOKEN: ${{ github.token }}
         run: |
-          echo "${{ github.event.discussion.body }}" > requirement.md
+          echo "${{ github.event.discussion.body }}" > "$TITLE.md"
 
           if [[ "${{ github.event_name }}" == "discussion_comment" ]]; then
-            comments=$(
-              gh discussion comment list ${{ github.event.discussion.node_id }} \
-                --json body,author \
-                --jq '.[] | select(.author.login != "github-actions[bot]") | .body'
+            comments=$(gh api graphql -f query='
+              query($discussionId: ID!) {
+                node(id: $discussionId) {
+                  ... on Discussion {
+                    comments(first: 100) {
+                      nodes {
+                        body
+                        author { login }
+                      }
+                    }
+                  }
+                }
+              }' -f discussionId="${{ github.event.discussion.node_id }}" \
+              --jq '.data.node.comments.nodes | map(select(.author.login != "github-actions[bot]")) | .[].body'
             )
-            echo "$comments" >> requirement.md
+            echo "$comments" >> "$TITLE.md"
           fi
 
       - name: Run Evaluator
-        env:
-          GH_TOKEN: ${{ github.token }}
-          TITLE: ${{ github.event.discussion.title }}
         run: |
           work-counter evaluate "$TITLE.md"
 
-          variables=$(yq eval -o=sh "$TITLE-$(date +%Y-%m-%d).yml")
+          variables=$(yq eval -o=sh "logs/evaluation/$TITLE-$(date +%Y-%m-%d).yml")
           eval $variables
 
           taxRate=$(echo "$taxRate * 100" | bc)
@@ -95,4 +99,9 @@ jobs:
           - 预算：￥$budget
           EOF
 
-          gh discussion comment ${{ github.event.discussion.node_id }} --body "$(cat evaluation.md)"
+          gh api graphql -f query='
+            mutation($discussionId: ID!, $body: String!) {
+              addDiscussionComment(input: {discussionId: $discussionId, body: $body}) {
+                comment { id }
+              }
+            }' -f discussionId="${{ github.event.discussion.node_id }}" -f body="$(cat evaluation.md)"
