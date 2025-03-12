@@ -1,0 +1,147 @@
+name: Requirement Evaluation
+on:
+  discussion:
+    types:
+      - created
+  discussion_comment:
+    types:
+      - created
+jobs:
+  requirement-evaluation:
+    runs-on: ubuntu-latest
+    permissions:
+      discussions: write
+    steps:
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 9
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+
+      - name: Install CLIs
+        run: |
+          wget https://github.com/mikefarah/yq/releases/latest/download/yq_linux_amd64 -O /usr/bin/yq
+          chmod +x /usr/bin/yq
+
+          cat >> .npmrc <<EOF
+          //npm.pkg.github.com/:_authToken=${{ secrets.NPM_TOKEN }}
+          @idea2app:registry=https://npm.pkg.github.com
+          always-auth=true
+          EOF
+
+          pnpm i @idea2app/work-counter -g
+
+          cat > .env <<EOF
+          ${{ secrets.ENV_FILE }}
+          EOF
+
+      - name: Collect Requirement content
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          echo "${{ github.event.discussion.body }}" > requirement.md
+
+          if [[ "${{ github.event_name }}" == "discussion_comment" ]]; then
+            comments=$(
+              gh discussion comment list ${{ github.event.discussion.node_id }} \
+                --json body,author \
+                --jq '.[] | select(.author.login != "github-actions[bot]") | .body'
+            )
+            echo "$comments" >> requirement.md
+          fi
+
+      - name: Run Evaluator
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TITLE: ${{ github.event.discussion.title }}
+        run: |
+          work-counter evaluate "$TITLE.md"
+
+          variables=$(yq eval -o=sh "$TITLE-$(date +%Y-%m-%d).yml")
+          eval $variables
+
+          taxRate=$(echo "$taxRate * 100" | bc)
+
+          max_model_index=$(echo $variables | grep -oP 'models_(\d+)=' | grep -oP '\d+' | sort -n | tail -1)
+          models=$(
+            for i in $(seq 0 $max_model_index); do
+              eval "value=\$models_$i"
+              [ -z "$value" ] && break
+              echo "    $((i+1)). $value"
+            done
+          )
+          max_scope_index=$(echo $variables | grep -oP 'scopes_(\d+)=' | grep -oP '\d+' | sort -n | tail -1)
+          scopes=$(
+            for i in $(seq 0 $max_scope_index); do
+              eval "value=\$scopes_$i"
+              [ -z "$value" ] && break
+              echo "    $((i+1)). $value"
+            done
+          )
+          cat > evaluation.md <<EOF
+          - 主要功能
+          $models
+          - 开发范围
+          $scopes
+          - 设计师：$designerCount 人
+          - 工程师：$developerCount 人
+          - 工作量：$workload 人天
+          - 周期：$monthPeriod 个月
+          - 税率：$taxRate %
+          - 预算：￥$budget
+          EOF
+
+          gh discussion comment ${{ github.event.discussion.node_id }} --body "$(cat evaluation.md)"
+
+          cat >> $GITHUB_ENV <<EOF
+          TITLE=$title
+          MODELS=$models
+          SCOPES=$scopes
+          DESIGNER_COUNT=$designerCount
+          DEVELOPER_COUNT=$developerCount
+          WORKLOAD=$workload
+          MONTH_PERIOD=$monthPeriod
+          TAX_RATE=$taxRate
+          BUDGET=$budget
+          EOF
+
+      - name: Lark notification
+        uses: foxundermoon/feishu-action@v2
+        with:
+          url: ${{ secrets.LARK_CHATBOT_HOOK_URL }}
+          msg_type: post
+          content: |
+            post:
+              zh_cn:
+                title: "【新需求】${{ env.TITLE }}"
+                content:
+                  - - tag: text
+                      text: 讨论帖：
+                    - tag: a
+                      text: ${{ github.event.discussion.html_url }}
+                      href: ${{ github.event.discussion.html_url }}
+                  - - tag: text
+                      text: 主要功能：
+                    - tag: text
+                      text: |
+                        ${{ env.MODELS }}
+                  - - tag: text
+                      text: 开发范围：
+                    - tag: text
+                      text: |
+                        ${{ env.SCOPES }}
+                  - - tag: text
+                      text: "设计师：${{ env.DESIGNER_COUNT }} 人"
+                  - - tag: text
+                      text: "工程师：${{ env.DEVELOPER_COUNT }} 人"
+                  - - tag: text
+                      text: "工作量：${{ env.WORKLOAD }} 人天"
+                  - - tag: text 
+                      text: "周期：${{ env.MONTH_PERIOD }} 个月"
+                  - - tag: text
+                      text: "税率：${{ env.TAX_RATE }} %"
+                  - - tag: text
+                      text: "预算：￥ ${{ env.BUDGET }}"
