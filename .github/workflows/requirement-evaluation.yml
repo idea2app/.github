@@ -8,7 +8,11 @@ on:
       - created
 jobs:
   requirement-evaluation:
-    if: github.event.discussion.category.name == 'ideas' && github.event.discussion.user.login != 'giscus[bot]'
+    if: |
+      github.event.discussion.category.name == 'ideas' && (
+        (github.event_name == 'discussion' && github.event.discussion.user.login != 'giscus[bot]') ||
+        (github.event_name == 'discussion_comment' && github.event.comment.user.login != 'giscus[bot]')
+      )
     runs-on: ubuntu-latest
     permissions:
       discussions: write
