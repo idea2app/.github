@@ -8,11 +8,7 @@ on:
       - created
 jobs:
   requirement-evaluation:
-    if: |
-      github.event.discussion.category.name == 'ideas' && (
-        (github.event_name == 'discussion' && github.event.discussion.user.login != 'giscus[bot]') ||
-        (github.event_name == 'discussion_comment' && github.event.comment.user.login != 'giscus[bot]')
-      )
+    if: github.event.discussion.category.name == 'ideas' && ((github.event_name == 'discussion' && github.event.discussion.user.type != 'Bot') || (github.event_name == 'discussion_comment' && github.event.comment.user.type != 'Bot'))
     runs-on: ubuntu-latest
     permissions:
       discussions: write
@@ -22,7 +18,7 @@ jobs:
     steps:
       - uses: pnpm/action-setup@v4
         with:
-          version: 9
+          version: 10
 
       - uses: actions/setup-node@v4
         with:
@@ -42,32 +38,9 @@ jobs:
           ${{ secrets.ENV_FILE }}
           EOF
 
-      - name: Collect Requirement content
-        run: |
-          echo "${{ github.event.discussion.body }}" > "$TITLE.md"
-
-          if [[ "${{ github.event_name }}" == "discussion_comment" ]]; then
-            comments=$(gh api graphql -f query='
-              query($discussionId: ID!) {
-                node(id: $discussionId) {
-                  ... on Discussion {
-                    comments(first: 100) {
-                      nodes {
-                        body
-                        author { login }
-                      }
-                    }
-                  }
-                }
-              }' -f discussionId="${{ github.event.discussion.node_id }}" \
-              --jq '.data.node.comments.nodes | map(select(.author.login != "github-actions[bot]")) | .[].body'
-            )
-            echo "$comments" >> "$TITLE.md"
-          fi
-
       - name: Run Evaluator
         run: |
-          work-counter evaluate "$TITLE.md"
+          work-counter evaluate "${{ github.event.discussion.html_url }}"
 
           variables=$(yq eval -o=sh "logs/evaluation/$TITLE-$(date +%Y-%m-%d).yml")
           eval $variables
